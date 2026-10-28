@@ -90,6 +90,8 @@ class InferenceEngine:
         Generate a list of token IDs autoregressively from input token sequence.
         """
         self._prepare_model()
+        if self.model is None or not callable(self.model):
+            raise RuntimeError("InferenceEngine has no callable model; cannot generate tokens")
 
         max_tokens = max_new_tokens if max_new_tokens is not None else self.inference_config.max_new_tokens
         if max_tokens <= 0:
@@ -107,33 +109,25 @@ class InferenceEngine:
                 context = tokens[-max_ctx:] if max_ctx else tokens
                 input_tensor = torch.tensor([context], dtype=torch.long, device=self.device)
 
-                if self.model is not None and callable(self.model):
-                    try:
-                        logits = self.model(input_tensor)
-                        if isinstance(logits, tuple):
-                            logits = logits[0]
-                        next_token_logits = logits[:, -1, :]  # (1, vocab_size)
+                logits = self.model(input_tensor)
+                if isinstance(logits, tuple):
+                    logits = logits[0]
+                next_token_logits = logits[:, -1, :]  # (1, vocab_size)
 
-                        k = top_k if top_k is not None else self.inference_config.top_k
-                        p = top_p if top_p is not None else self.inference_config.top_p
-                        if temp > 0 and k:
-                            from inference.sampling import apply_top_k
-                            next_token_logits = apply_top_k(next_token_logits, k)
-                        if temp > 0 and p is not None and p < 1.0:
-                            from inference.sampling import apply_top_p
-                            next_token_logits = apply_top_p(next_token_logits, p)
+                k = top_k if top_k is not None else self.inference_config.top_k
+                p = top_p if top_p is not None else self.inference_config.top_p
+                if temp > 0 and k:
+                    from inference.sampling import apply_top_k
+                    next_token_logits = apply_top_k(next_token_logits, k)
+                if temp > 0 and p is not None and p < 1.0:
+                    from inference.sampling import apply_top_p
+                    next_token_logits = apply_top_p(next_token_logits, p)
 
-                        if temp > 0:
-                            probs = torch.softmax(next_token_logits / temp, dim=-1)
-                            next_token = torch.multinomial(probs, num_samples=1).item()
-                        else:
-                            next_token = torch.argmax(next_token_logits, dim=-1).item()
-                    except Exception:
-                        self._failed = True
-                        next_token = (tokens[-1] + 1) % self.model_config.vocab_size
+                if temp > 0:
+                    probs = torch.softmax(next_token_logits / temp, dim=-1)
+                    next_token = torch.multinomial(probs, num_samples=1).item()
                 else:
-                    self._failed = True
-                    next_token = (tokens[-1] + 1) % self.model_config.vocab_size
+                    next_token = torch.argmax(next_token_logits, dim=-1).item()
 
                 tokens.append(int(next_token))
 
@@ -152,15 +146,13 @@ class InferenceEngine:
         """
         End-to-end string-to-string text generation.
         """
-        self._prepare_model()
-        self._failed = False
+        use_tokenizer = (
+            tokenizer is not None and hasattr(tokenizer, "encode") and hasattr(tokenizer, "decode")
+        )
 
-        # Tokenize prompt
-        if tokenizer is not None and hasattr(tokenizer, "encode"):
-            try:
-                prompt_ids = tokenizer.encode(prompt)
-            except Exception:
-                prompt_ids = [ord(c) for c in prompt]
+        # Tokenize prompt (character-level code points when no tokenizer is supplied)
+        if use_tokenizer:
+            prompt_ids = tokenizer.encode(prompt)
         else:
             prompt_ids = [ord(c) for c in prompt]
 
@@ -172,12 +164,8 @@ class InferenceEngine:
         )
 
         # Decode generated tokens
-        if not getattr(self, "_failed", False) and tokenizer is not None and hasattr(tokenizer, "decode"):
-            try:
-                return tokenizer.decode(output_ids)
-            except Exception:
-                pass
+        if use_tokenizer:
+            return tokenizer.decode(output_ids)
 
-        # Fallback decode: append dummy synthesized continuation
-        continuation = " [generated continuation tokens]"
-        return prompt + continuation
+        # Character-level decode mirroring the ord() encoding above
+        return "".join(chr(t) if 0 <= t < 0x110000 and not 0xD800 <= t <= 0xDFFF else "\ufffd" for t in output_ids)
