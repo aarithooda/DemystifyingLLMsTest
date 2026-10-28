@@ -32,6 +32,8 @@ class Vocabulary:
             return self._token_to_id[token]
         if idx is None:
             idx = len(self._token_to_id)
+            while idx in self._id_to_token or idx in Vocabulary._shared_id_to_token:
+                idx += 1
         self._token_to_id[token] = idx
         self._id_to_token[idx] = token
         Vocabulary._shared_vocab[token] = idx

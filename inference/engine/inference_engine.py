@@ -97,11 +97,15 @@ class InferenceEngine:
 
         temp = temperature if temperature is not None else self.inference_config.temperature
         tokens = list(prompt_tokens)
+        if self.inference_config.seed is not None:
+            torch.manual_seed(self.inference_config.seed)
+        max_ctx = getattr(self.model_config, "max_seq_len", None)
 
         # Autoregressive generation loop
         with torch.no_grad():
             for _ in range(max_tokens):
-                input_tensor = torch.tensor([tokens], dtype=torch.long, device=self.device)
+                context = tokens[-max_ctx:] if max_ctx else tokens
+                input_tensor = torch.tensor([context], dtype=torch.long, device=self.device)
 
                 if self.model is not None and callable(self.model):
                     try:
